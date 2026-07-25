@@ -1,0 +1,8 @@
+{
+  "system_id": "tasklet-micro-agent-engine",
+  "shadow_mode": "ACTIVE",
+  "mastermind_synced": true,
+  "telemetry": {
+    "status": "TASKLET_ACTIVE"
+  }
+}
