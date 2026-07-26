@@ -1,0 +1,17 @@
+{
+  "repo": "tasklet-micro-agent-engine",
+  "algorithm": "sha256",
+  "file_count": 10,
+  "hashes": {
+    "README.md": "1600c85f7edd6864234bece9b7773923676d7aadbd619453f2440fc3802222c6",
+    "AKOS.md": "2761435d2647f96185f8d934dc74adcfcb6046347754d71d297207a99577e258",
+    "AGENTS.md": "eb247a60bb48b54f5f54322479b47bddb2e802347fddec6bd0124a3b5ff88c57",
+    "HELIX_STRAND.md": "9304a00e2c6835788f269ac5394bd8b2b7bba6575116e86a753753856e32faa7",
+    "mastermind_sidecar.py": "3a292e1b309bba2571c481ba06da9cd2f1aef13d56621e8eb8a10956ebf42579",
+    "SECURITY_AND_FLEET_OPS.md": "26141c0f07d95847d679de423ddb7bdee6f3e319d204383c89a58d6d3bb610c7",
+    "ISSUE_CONTRACT.md": "e72a93c408fdaac2e68d3e7f065ae0d249736d4f210c4dddf4e6ff4daf92dc55",
+    "HELIX.md": "a2430c761e44b2a8b20220c8a79f5dc49198f6664f62dc90f42eac4f90f103e6",
+    "tests/test_tasklet.py": "27bae179cca40d65309ae82aa5e50421b490cc40ba98f86590df381dba3d0eff",
+    "src/tasklet_micro_agent_engine.py": "af0d85f97e5667ac83975673fb4126140dfaa661bbf6f27836384ba8af8de3f1"
+  }
+}
