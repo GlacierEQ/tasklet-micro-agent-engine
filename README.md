@@ -1,20 +1,46 @@
-# Tasklet Micro Agent Engine
+# Tasklet Micro Agent Engine — Lightweight Agent Execution Runtime ⚡
 
-> **Production Solution for Persistent Micro-Tasklet State & Sub-Agent Dispatch**
+> **Lightweight micro-agent execution engine for ultra-low overhead task dispatching.**
 
-## Verification
-```bash
-PYTHONPATH=src python3 tests/test_tasklet.py
-python3 mastermind_sidecar.py
-```
+[![Python](https://img.shields.io/badge/Python-3.9+-blue)]()
+[![Domain](https://img.shields.io/badge/Domain-Micro--Agents-purple)]()
 
 ---
 
-## Fleet ops (transparent)
+## 🎯 For Recruiters & Hiring Managers
 
-This repo may include `.integrity/` (SHA-256 integrity) and/or a health sidecar.
-These are **documented fleet operations**, not covert implants. See [SECURITY_AND_FLEET_OPS.md](SECURITY_AND_FLEET_OPS.md).
+This repository implements the **Tasklet Micro Agent Engine** — a minimal, fast execution runtime designed for micro-agents running atomic tasks. It demonstrates:
 
-## Helix strand
+- **Micro-agent state machine** executing isolated single-purpose tasklets
+- **Sub-millisecond task initialization** without heavy agent framework overhead
+- **Memory-efficient tasklet queues** suitable for high-density sidecar deployments
+- **Python async execution loop** with structured result passing
 
-See [HELIX_STRAND.md](HELIX_STRAND.md) — piston/spiral role in the portfolio double helix.
+**Why this matters**: Not every agent task requires a heavy multi-turn framework. Lightweight tasklet runtimes enable high-throughput execution of simple tool calls and subtasks.
+
+---
+
+## 🔬 For Engineers & Technical Reviewers
+
+### Core Components
+
+| Component | Language | Purpose |
+|---|---|---|
+| `src/tasklet_engine.py` | Python | Micro-agent execution runtime and tasklet queue |
+| `tests/` | Python | Tasklet execution test suite |
+
+---
+
+## 🤖 ML/AI & Programmatic Mesh Integration
+
+- **MCP Tool**: `run_tasklet()` — atomic task execution tool for swarm orchestrators
+- **Mastermind Sidecar**: Telemetry bridge to APEX Highway mesh
+- **SHA-256 Integrity**: Tracked in `.integrity/file_hashes.json`
+
+---
+
+## ⚡ Quick Start
+
+```bash
+python3 src/tasklet_engine.py
+```
