@@ -16,11 +16,11 @@
     "pyproject.toml": "11200b0ca5b25a172b027228430a8d9fffd3e5708d690aec08089f81004ac578",
     "scripts/benchmark_spawn.py": "f1dfeb458f275423479f445ee9794dafeadb4ab9717dadc8e3edd0e8286e4b0e",
     "scripts/verify_integrity.py": "c6e309a93238fc0dbc5fc8f734848f7def80962fdb2e453eea730291223b0b9a",
-    "scripts/verify_junit.py": "6b6c7278f9ca4f9d22fe4e1d08f2769147739da22098db694be21b88b3c86cd0",
+    "scripts/verify_junit.py": "61711fa3a537899adf41f101fcb7b4a4b7786dbac215f6a154be6ac223812186",
     "src/tasklet_micro_agent_engine.py": "9e583731846397aa7e086124eb7aae2be2e51785ee832a1dc9516ea4e01dcd32",
     "tests/test_sidecar.py": "b51f456ee4ddc956ddd0ce2c4061d6e75072f07ed71a2f40c7409d1d59fa33da",
     "tests/test_tasklet.py": "a956b1047e9a926f33867f6e39e062b0e44dd3fe080d6bea0fef6743fde162ac",
-    "tests/test_verify_junit.py": "47856e882674bc24577140ec996758efe216172bd3fed09c37ecb90da1f3125d"
+    "tests/test_verify_junit.py": "27f390a727e3231559eb04645ecda3ee57924cecc15af76aef4227c117278247"
   },
   "schema": "glaciereq.tasklet.integrity-manifest.v2",
   "scope": "all_git_tracked_regular_files_except_manifest_itself"
