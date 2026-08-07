@@ -1,8 +1,10 @@
-"""Behavioral tests for the Tasklet Micro Agent Engine."""
+"""Behavioral and adversarial tests for the Tasklet Micro Agent Engine."""
 
 from __future__ import annotations
 
 import asyncio
+import threading
+import time
 import unittest
 
 from tasklet_micro_agent_engine import TaskletMicroAgentEngine
@@ -46,6 +48,26 @@ class SchedulerTests(unittest.TestCase):
         self.assertFalse(result["ok"])
         self.assertEqual(result["error"], "cannot_resume_from_COMPLETED")
 
+    def test_repeated_completion_is_rejected_without_metric_inflation(self) -> None:
+        engine = TaskletMicroAgentEngine()
+        engine.spawn_tasklet("done", {})
+        first = engine.complete_tasklet("done", result="first")
+        second = engine.complete_tasklet("done", result="second")
+        self.assertTrue(first["ok"])
+        self.assertFalse(second["ok"])
+        self.assertEqual(second["error"], "cannot_complete_from_COMPLETED")
+        self.assertEqual(engine.metrics["completed"], 1)
+        self.assertEqual(engine.tasklet_registry["done"]["result"], "first")
+
+    def test_suspended_tasklet_cannot_be_completed(self) -> None:
+        engine = TaskletMicroAgentEngine()
+        engine.spawn_tasklet("paused", {})
+        self.assertTrue(engine.suspend_tasklet("paused")["ok"])
+        result = engine.complete_tasklet("paused")
+        self.assertFalse(result["ok"])
+        self.assertEqual(result["error"], "cannot_complete_from_SUSPENDED")
+        self.assertEqual(engine.metrics["completed"], 0)
+
     def test_payload_budget_fails_closed(self) -> None:
         engine = TaskletMicroAgentEngine(max_payload_bytes=16)
         with self.assertRaisesRegex(ValueError, "max_payload_bytes"):
@@ -55,6 +77,11 @@ class SchedulerTests(unittest.TestCase):
         engine = TaskletMicroAgentEngine()
         with self.assertRaisesRegex(ValueError, "JSON-serializable and finite"):
             engine.spawn_tasklet(payload={"value": float("nan")})
+
+    def test_non_json_payload_object_is_rejected(self) -> None:
+        engine = TaskletMicroAgentEngine()
+        with self.assertRaisesRegex(ValueError, "JSON-serializable and finite"):
+            engine.spawn_tasklet(payload={"value": object()})
 
 
 class AsyncExecutionTests(unittest.IsolatedAsyncioTestCase):
@@ -70,6 +97,32 @@ class AsyncExecutionTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(result["status"], "COMPLETED")
         self.assertEqual(result["result"], 42)
         self.assertFalse(result["replayed"])
+
+    async def test_async_callable_object_is_awaited(self) -> None:
+        engine = TaskletMicroAgentEngine()
+
+        class Handler:
+            async def __call__(self, payload: dict[str, object]) -> str:
+                await asyncio.sleep(0)
+                return f"done:{payload['value']}"
+
+        result = await engine.run_tasklet(Handler(), {"value": 7})
+        self.assertTrue(result["ok"])
+        self.assertEqual(result["result"], "done:7")
+
+    async def test_sync_callable_returning_awaitable_is_awaited(self) -> None:
+        engine = TaskletMicroAgentEngine()
+
+        def handler(payload: dict[str, object]):
+            async def resolved() -> int:
+                await asyncio.sleep(0)
+                return int(payload["value"]) + 1
+
+            return resolved()
+
+        result = await engine.run_tasklet(handler, {"value": 8})
+        self.assertTrue(result["ok"])
+        self.assertEqual(result["result"], 9)
 
     async def test_sync_handler_runs_without_blocking_api_contract(self) -> None:
         engine = TaskletMicroAgentEngine()
@@ -91,7 +144,55 @@ class AsyncExecutionTests(unittest.IsolatedAsyncioTestCase):
         self.assertFalse(result["ok"])
         self.assertEqual(result["status"], "TIMED_OUT")
         self.assertEqual(result["error"], "deadline_exceeded")
+        self.assertFalse(result["execution_continues"])
         self.assertEqual(engine.metrics["timed_out"], 1)
+
+    async def test_deadline_includes_wait_for_concurrency_slot(self) -> None:
+        engine = TaskletMicroAgentEngine(max_concurrent_tasklets=1, max_timeout_s=1.0)
+        entered = asyncio.Event()
+        release = asyncio.Event()
+
+        async def holder(_payload: dict[str, object]) -> str:
+            entered.set()
+            await release.wait()
+            return "held"
+
+        first = asyncio.create_task(engine.run_tasklet(holder))
+        await entered.wait()
+        started = time.perf_counter()
+        second = await engine.run_tasklet(lambda _payload: "late", timeout_s=0.01)
+        elapsed = time.perf_counter() - started
+        self.assertFalse(second["ok"])
+        self.assertEqual(second["status"], "TIMED_OUT")
+        self.assertLess(elapsed, 0.05)
+        release.set()
+        self.assertTrue((await first)["ok"])
+
+    async def test_sync_timeout_reports_worker_continuation_and_holds_capacity(self) -> None:
+        engine = TaskletMicroAgentEngine(max_concurrent_tasklets=1, max_timeout_s=1.0)
+        worker_started = threading.Event()
+        worker_release = threading.Event()
+
+        def slow_sync(_payload: dict[str, object]) -> str:
+            worker_started.set()
+            worker_release.wait(timeout=1.0)
+            return "finished"
+
+        timed_out = await engine.run_tasklet(slow_sync, timeout_s=0.01)
+        self.assertTrue(worker_started.is_set())
+        self.assertFalse(timed_out["ok"])
+        self.assertEqual(timed_out["status"], "TIMED_OUT")
+        self.assertTrue(timed_out["execution_continues"])
+
+        blocked = await engine.run_tasklet(lambda _payload: "next", timeout_s=0.01)
+        self.assertFalse(blocked["ok"])
+        self.assertEqual(blocked["status"], "TIMED_OUT")
+
+        worker_release.set()
+        await asyncio.sleep(0.02)
+        completed = await engine.run_tasklet(lambda _payload: "next", timeout_s=0.1)
+        self.assertTrue(completed["ok"])
+        self.assertEqual(completed["result"], "next")
 
     async def test_handler_failure_is_bounded_as_receipt(self) -> None:
         engine = TaskletMicroAgentEngine()
@@ -130,6 +231,20 @@ class AsyncExecutionTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(executions, 1)
         self.assertEqual(engine.metrics["idempotent_replays"], 1)
 
+    async def test_stale_idempotency_pointer_is_recovered(self) -> None:
+        engine = TaskletMicroAgentEngine()
+        first = await engine.run_tasklet(
+            lambda _payload: "first",
+            idempotency_key="recoverable",
+        )
+        del engine.tasklet_registry[first["tasklet_id"]]
+        second = await engine.run_tasklet(
+            lambda _payload: "second",
+            idempotency_key="recoverable",
+        )
+        self.assertTrue(second["ok"])
+        self.assertEqual(second["result"], "second")
+
     async def test_concurrent_duplicate_idempotency_key_fails_closed(self) -> None:
         engine = TaskletMicroAgentEngine()
         entered = asyncio.Event()
@@ -150,6 +265,33 @@ class AsyncExecutionTests(unittest.IsolatedAsyncioTestCase):
         release.set()
         first = await first_task
         self.assertTrue(first["ok"])
+
+    async def test_runtime_managed_tasklet_rejects_external_lifecycle_mutation(self) -> None:
+        engine = TaskletMicroAgentEngine()
+        entered = asyncio.Event()
+        release = asyncio.Event()
+
+        async def handler(_payload: dict[str, object]) -> str:
+            entered.set()
+            await release.wait()
+            return "done"
+
+        task = asyncio.create_task(engine.run_tasklet(handler, tasklet_id="runtime"))
+        await entered.wait()
+        self.assertEqual(
+            engine.complete_tasklet("runtime")["error"],
+            "runtime_managed_execution",
+        )
+        self.assertEqual(
+            engine.suspend_tasklet("runtime")["error"],
+            "runtime_managed_execution",
+        )
+        self.assertEqual(
+            engine.resume_tasklet("runtime")["error"],
+            "runtime_managed_execution",
+        )
+        release.set()
+        self.assertTrue((await task)["ok"])
 
     async def test_execution_concurrency_never_exceeds_configured_cap(self) -> None:
         engine = TaskletMicroAgentEngine(max_concurrent_tasklets=2)
