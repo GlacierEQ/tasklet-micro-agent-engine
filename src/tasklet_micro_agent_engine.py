@@ -28,8 +28,8 @@ class TaskletMicroAgentEngine:
 
     ``spawn_tasklet`` preserves the original registry/scheduler surface.
     ``run_tasklet`` is the execution surface: it admits work only within the
-    configured bounds, executes sync or async handlers, applies a deadline,
-    preserves idempotency, and emits structured terminal state.
+    configured bounds, executes sync or async handlers, applies a full dispatch
+    deadline, preserves idempotency, and emits structured terminal state.
     """
 
     def __init__(
@@ -81,7 +81,6 @@ class TaskletMicroAgentEngine:
                 sort_keys=True,
                 separators=(",", ":"),
                 allow_nan=False,
-                default=str,
             ).encode("utf-8")
         except (TypeError, ValueError) as exc:
             raise ValueError("payload must be JSON-serializable and finite") from exc
@@ -112,6 +111,13 @@ class TaskletMicroAgentEngine:
             if tasklet["status"] == "RUNNING"
         )
 
+    def _queued_count(self) -> int:
+        return sum(
+            1
+            for tasklet in self.tasklet_registry.values()
+            if tasklet["status"] == "QUEUED"
+        )
+
     def _record(
         self,
         tasklet_id: str,
@@ -119,20 +125,25 @@ class TaskletMicroAgentEngine:
         priority: int,
         *,
         idempotency_key: str | None = None,
+        execution_owner: str = "registry",
+        status: str = "RUNNING",
+        schedule: bool = True,
     ) -> dict[str, Any]:
         now = time.time()
         record: dict[str, Any] = {
             "payload": payload,
             "priority": int(priority),
-            "status": "RUNNING",
+            "status": status,
+            "execution_owner": execution_owner,
             "created_at": now,
             "updated_at": now,
             "snapshot": dict(payload),
             "idempotency_key": idempotency_key,
         }
         self.tasklet_registry[tasklet_id] = record
-        self._seq += 1
-        heapq.heappush(self._heap, (int(priority), self._seq, tasklet_id))
+        if schedule:
+            self._seq += 1
+            heapq.heappush(self._heap, (int(priority), self._seq, tasklet_id))
         self.metrics["spawned"] += 1
         return record
 
@@ -150,12 +161,12 @@ class TaskletMicroAgentEngine:
         tasklet_id = tasklet_id or str(uuid.uuid4())
 
         existing = self.tasklet_registry.get(tasklet_id)
-        if existing and existing["status"] == "RUNNING":
+        if existing and existing["status"] not in TERMINAL_STATES:
             self.metrics["rejected"] += 1
             return {
                 "ok": False,
                 "tasklet_id": tasklet_id,
-                "error": "already_running",
+                "error": "already_active",
                 "status": "REJECTED",
             }
 
@@ -181,12 +192,14 @@ class TaskletMicroAgentEngine:
         }
 
     def next_tasklet(self) -> dict[str, Any] | None:
-        """Return the highest-priority currently running tasklet."""
+        """Return the highest-priority currently running registry tasklet."""
 
         while self._heap:
             priority, _sequence, tasklet_id = heapq.heappop(self._heap)
             record = self.tasklet_registry.get(tasklet_id)
             if not record or record["status"] != "RUNNING":
+                continue
+            if record.get("execution_owner") != "registry":
                 continue
             return {
                 "tasklet_id": tasklet_id,
@@ -202,22 +215,39 @@ class TaskletMicroAgentEngine:
         *,
         result: Any = None,
         error: str | None = None,
+        execution_continues: bool = False,
     ) -> dict[str, Any]:
         record = self.tasklet_registry.get(tasklet_id)
         if not record:
             return {"ok": False, "error": "unknown_tasklet"}
+        if record["status"] in TERMINAL_STATES:
+            return {
+                "ok": False,
+                "error": f"cannot_finish_from_{record['status']}",
+            }
         record["status"] = status
         record["updated_at"] = time.time()
+        record["execution_continues"] = execution_continues
         if result is not None:
             record["result"] = result
         if error is not None:
             record["error"] = error
-        return record
+        return {"ok": True, "record": record}
 
     def complete_tasklet(self, tasklet_id: str, result: Any = None) -> dict[str, Any]:
-        if tasklet_id not in self.tasklet_registry:
+        record = self.tasklet_registry.get(tasklet_id)
+        if not record:
             return {"ok": False, "error": "unknown_tasklet"}
-        self._finish(tasklet_id, "COMPLETED", result=result)
+        if record.get("execution_owner") != "registry":
+            return {"ok": False, "error": "runtime_managed_execution"}
+        if record["status"] != "RUNNING":
+            return {
+                "ok": False,
+                "error": f"cannot_complete_from_{record['status']}",
+            }
+        transition = self._finish(tasklet_id, "COMPLETED", result=result)
+        if not transition["ok"]:
+            return transition
         self.metrics["completed"] += 1
         return {"ok": True, "tasklet_id": tasklet_id, "status": "COMPLETED"}
 
@@ -225,6 +255,8 @@ class TaskletMicroAgentEngine:
         record = self.tasklet_registry.get(tasklet_id)
         if not record:
             return {"ok": False, "error": "unknown_tasklet"}
+        if record.get("execution_owner") != "registry":
+            return {"ok": False, "error": "runtime_managed_execution"}
         if record["status"] != "RUNNING":
             return {
                 "ok": False,
@@ -239,6 +271,8 @@ class TaskletMicroAgentEngine:
         record = self.tasklet_registry.get(tasklet_id)
         if not record:
             return {"ok": False, "error": "unknown_tasklet"}
+        if record.get("execution_owner") != "registry":
+            return {"ok": False, "error": "runtime_managed_execution"}
         if record["status"] != "SUSPENDED":
             return {
                 "ok": False,
@@ -267,6 +301,39 @@ class TaskletMicroAgentEngine:
             "payload": dict(record["payload"]),
         }
 
+    @staticmethod
+    def _is_async_callable(handler: TaskHandler) -> bool:
+        return bool(
+            inspect.iscoroutinefunction(handler)
+            or inspect.iscoroutinefunction(getattr(handler, "__call__", None))
+        )
+
+    @staticmethod
+    def _remaining(deadline: float | None) -> float | None:
+        if deadline is None:
+            return None
+        remaining = deadline - asyncio.get_running_loop().time()
+        if remaining <= 0:
+            raise TimeoutError
+        return remaining
+
+    async def _await_deadline(
+        self,
+        awaitable: Awaitable[Any],
+        deadline: float | None,
+    ) -> Any:
+        remaining = self._remaining(deadline)
+        if remaining is None:
+            return await awaitable
+        return await asyncio.wait_for(awaitable, timeout=remaining)
+
+    async def _acquire_deadline(self, deadline: float | None) -> None:
+        remaining = self._remaining(deadline)
+        if remaining is None:
+            await self._semaphore.acquire()
+        else:
+            await asyncio.wait_for(self._semaphore.acquire(), timeout=remaining)
+
     async def run_tasklet(
         self,
         handler: TaskHandler,
@@ -279,10 +346,11 @@ class TaskletMicroAgentEngine:
     ) -> dict[str, Any]:
         """Execute one bounded tasklet and return a structured receipt.
 
-        The method accepts synchronous or asynchronous handlers. Synchronous
-        handlers execute via ``asyncio.to_thread`` so they do not block the
-        event loop. Duplicate completed idempotency keys replay the prior
-        terminal result; concurrent duplicates fail closed.
+        The deadline covers semaphore wait plus handler execution. Async handlers
+        are cooperatively cancellable. A timed-out synchronous handler may still
+        finish in its worker thread; Tasklet retains its concurrency slot until
+        that worker exits and marks ``execution_continues`` in the timeout
+        receipt rather than pretending the thread was stopped.
         """
 
         normalized = self._validate_payload(payload)
@@ -296,8 +364,10 @@ class TaskletMicroAgentEngine:
             if idempotency_key is not None:
                 previous_id = self._idempotency_index.get(idempotency_key)
                 if previous_id:
-                    previous = self.tasklet_registry[previous_id]
-                    if previous["status"] == "COMPLETED":
+                    previous = self.tasklet_registry.get(previous_id)
+                    if previous is None:
+                        self._idempotency_index.pop(idempotency_key, None)
+                    elif previous["status"] == "COMPLETED":
                         self.metrics["idempotent_replays"] += 1
                         return {
                             "ok": True,
@@ -307,7 +377,7 @@ class TaskletMicroAgentEngine:
                             "replayed": True,
                             "idempotency_key": idempotency_key,
                         }
-                    if previous["status"] not in TERMINAL_STATES:
+                    elif previous["status"] not in TERMINAL_STATES:
                         self.metrics["rejected"] += 1
                         return {
                             "ok": False,
@@ -325,49 +395,107 @@ class TaskletMicroAgentEngine:
                     "ok": False,
                     "tasklet_id": resolved_id,
                     "status": "REJECTED",
-                    "error": "already_running",
+                    "error": "already_active",
                 }
             self._record(
                 resolved_id,
                 normalized,
                 priority,
                 idempotency_key=idempotency_key,
+                execution_owner="runtime",
+                status="QUEUED",
+                schedule=False,
             )
             if idempotency_key is not None:
                 self._idempotency_index[idempotency_key] = resolved_id
 
         started = time.perf_counter()
+        loop = asyncio.get_running_loop()
+        deadline = None if timeout is None else loop.time() + timeout
+        acquired = False
+        deferred_release = False
+        sync_worker: asyncio.Task[Any] | None = None
+
         try:
-            async with self._semaphore:
-                if inspect.iscoroutinefunction(handler):
-                    awaitable = handler(dict(normalized))
+            await self._acquire_deadline(deadline)
+            acquired = True
+            record = self.tasklet_registry[resolved_id]
+            record["status"] = "RUNNING"
+            record["updated_at"] = time.time()
+
+            if self._is_async_callable(handler):
+                produced = handler(dict(normalized))
+                if inspect.isawaitable(produced):
+                    result = await self._await_deadline(produced, deadline)
                 else:
-                    awaitable = asyncio.to_thread(handler, dict(normalized))
-                if timeout is None:
-                    result = await awaitable
+                    result = produced
+            else:
+                sync_worker = asyncio.create_task(
+                    asyncio.to_thread(handler, dict(normalized))
+                )
+                remaining = self._remaining(deadline)
+                if remaining is None:
+                    produced = await sync_worker
                 else:
-                    result = await asyncio.wait_for(awaitable, timeout=timeout)
+                    produced = await asyncio.wait_for(
+                        asyncio.shield(sync_worker),
+                        timeout=remaining,
+                    )
+                if inspect.isawaitable(produced):
+                    result = await self._await_deadline(produced, deadline)
+                else:
+                    result = produced
         except TimeoutError:
-            self._finish(resolved_id, "TIMED_OUT", error="deadline_exceeded")
-            self.metrics["timed_out"] += 1
+            execution_continues = bool(
+                sync_worker is not None and not sync_worker.done()
+            )
+            if execution_continues:
+                deferred_release = True
+                sync_worker.add_done_callback(
+                    lambda _future: self._semaphore.release()
+                )
+            transition = self._finish(
+                resolved_id,
+                "TIMED_OUT",
+                error="deadline_exceeded",
+                execution_continues=execution_continues,
+            )
+            if transition["ok"]:
+                self.metrics["timed_out"] += 1
             return {
                 "ok": False,
                 "tasklet_id": resolved_id,
                 "status": "TIMED_OUT",
                 "error": "deadline_exceeded",
+                "execution_continues": execution_continues,
                 "elapsed_ms": round((time.perf_counter() - started) * 1000, 6),
             }
         except asyncio.CancelledError:
-            self._finish(resolved_id, "CANCELLED", error="cancelled")
-            self.metrics["cancelled"] += 1
+            execution_continues = bool(
+                sync_worker is not None and not sync_worker.done()
+            )
+            if execution_continues:
+                deferred_release = True
+                sync_worker.add_done_callback(
+                    lambda _future: self._semaphore.release()
+                )
+            transition = self._finish(
+                resolved_id,
+                "CANCELLED",
+                error="cancelled",
+                execution_continues=execution_continues,
+            )
+            if transition["ok"]:
+                self.metrics["cancelled"] += 1
             raise
         except Exception as exc:  # noqa: BLE001 - boundary converts failures to receipts
-            self._finish(
+            transition = self._finish(
                 resolved_id,
                 "FAILED",
                 error=f"{type(exc).__name__}: {exc}",
             )
-            self.metrics["failed"] += 1
+            if transition["ok"]:
+                self.metrics["failed"] += 1
             return {
                 "ok": False,
                 "tasklet_id": resolved_id,
@@ -375,8 +503,20 @@ class TaskletMicroAgentEngine:
                 "error": f"{type(exc).__name__}: {exc}",
                 "elapsed_ms": round((time.perf_counter() - started) * 1000, 6),
             }
+        finally:
+            if acquired and not deferred_release:
+                self._semaphore.release()
 
-        self._finish(resolved_id, "COMPLETED", result=result)
+        transition = self._finish(resolved_id, "COMPLETED", result=result)
+        if not transition["ok"]:
+            self.metrics["failed"] += 1
+            return {
+                "ok": False,
+                "tasklet_id": resolved_id,
+                "status": "FAILED",
+                "error": transition["error"],
+                "elapsed_ms": round((time.perf_counter() - started) * 1000, 6),
+            }
         self.metrics["completed"] += 1
         return {
             "ok": True,
@@ -399,6 +539,7 @@ class TaskletMicroAgentEngine:
             **self.metrics,
             "accept_rate": round(accept_rate, 4),
             "active": self._running_count(),
+            "queued": self._queued_count(),
             "registered": len(self.tasklet_registry),
         }
 
