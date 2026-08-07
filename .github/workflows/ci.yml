@@ -101,19 +101,8 @@ jobs:
             --iterations 5000 \
             --warmup 500 \
             --require-sub-ms-p95 \
+            --commit "${VERIFIED_SHA}" \
             --output artifacts/spawn-benchmark.json
-      - name: Bind benchmark to exact head
-        run: |
-          python - <<'PY'
-          import json
-          import os
-          from pathlib import Path
-
-          path = Path("artifacts/spawn-benchmark.json")
-          receipt = json.loads(path.read_text())
-          receipt["commit"] = os.environ["VERIFIED_SHA"]
-          path.write_text(json.dumps(receipt, indent=2, sort_keys=True) + "\n")
-          PY
       - name: Upload benchmark receipt
         uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
         with:
