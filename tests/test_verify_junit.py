@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import json
 import subprocess
 import sys
 from pathlib import Path
@@ -42,7 +43,9 @@ def test_all_skipped_junit_cannot_be_promoted(tmp_path: Path) -> None:
     assert not receipt.exists()
 
 
-def test_mixed_executed_and_skipped_junit_is_counted_truthfully(tmp_path: Path) -> None:
+def test_mixed_executed_and_skipped_junit_is_counted_truthfully(
+    tmp_path: Path,
+) -> None:
     junit = tmp_path / "mixed.xml"
     receipt = tmp_path / "receipt.json"
     junit.write_text(
@@ -73,7 +76,7 @@ def test_mixed_executed_and_skipped_junit_is_counted_truthfully(tmp_path: Path) 
         check=False,
     )
     assert completed.returncode == 0, completed.stderr
-    payload = __import__("json").loads(receipt.read_text(encoding="utf-8"))
+    payload = json.loads(receipt.read_text(encoding="utf-8"))
     assert payload["tests"] == 3
     assert payload["executed"] == 2
     assert payload["skipped"] == 1
