@@ -8,7 +8,7 @@
 
 Tasklet is a dependency-free Python runtime for **atomic local work**. It is designed for jobs that are too small to justify a full multi-turn agent lifecycle but still need the controls that toy executors usually omit.
 
-The current hardening candidate implements:
+The runtime implements:
 
 - deterministic priority registration;
 - bounded concurrent handler execution;
@@ -74,7 +74,8 @@ The architectural claim is therefore narrow and testable: **atomic work can reta
 | `mastermind_sidecar.py` | SHA-256 evidence for required repository surfaces |
 | `scripts/verify_junit.py` | Positive-count JUnit verification receipt |
 | `scripts/benchmark_spawn.py` | Disclosed-environment registration-latency receipt |
-| `.github/workflows/ci.yml` | Python 3.11–3.13 native verification and benchmark gate |
+| `scripts/verify_integrity.py` | Repository-wide tracked-file SHA-256 gate |
+| `.github/workflows/ci.yml` | Exact-head Python 3.11–3.13 verification, benchmark, and integrity gates |
 | `pyproject.toml` | Installable package and lint/test contract |
 
 ### Execution semantics
@@ -109,9 +110,9 @@ The runtime fails closed for:
 - duplicate active tasklet IDs;
 - scheduler registrations above the configured active-task limit.
 
-### Verification
+### Native verification
 
-The candidate must pass all of these before promotion:
+The exact-head CI contract is:
 
 ```bash
 python -m pip install -e ".[dev]"
@@ -125,15 +126,36 @@ python scripts/benchmark_spawn.py \
   --iterations 5000 \
   --warmup 500 \
   --require-sub-ms-p95
+python scripts/verify_integrity.py --check
 ```
 
-GitHub Actions repeats the correctness suite across Python **3.11, 3.12, and 3.13**. The benchmark runs separately on a disclosed GitHub-hosted Ubuntu runner.
+GitHub Actions checks out the **literal pull-request head SHA**, proves checkout identity, and repeats the correctness suite across Python **3.11, 3.12, and 3.13**. The benchmark runs separately on a disclosed GitHub-hosted Ubuntu runner. The integrity gate hashes every tracked regular file except the manifest itself and rejects drift.
+
+### Measured proof
+
+An exact-head provider run on commit `b270b0d01fbf33e52e25affa78b61cb4d197e620` established the current pre-promotion evidence baseline:
+
+| Evidence | Result |
+|---|---:|
+| Python versions | 3.11 / 3.12 / 3.13 |
+| Tests per interpreter | 16 |
+| Total matrix executions | 48 |
+| Failures / errors / skips | 0 / 0 / 0 |
+| Repository-local health | healthy |
+| Integrity manifest equality | PASS |
+| Benchmark iterations | 5,000 |
+| Registration p50 | 0.200066 ms |
+| Registration p95 | **0.346544 ms** |
+| Registration p99 | 0.364911 ms |
+| Benchmark runner | Linux x86_64, Python 3.13.14, Azure-hosted GitHub runner |
+
+The final promotion rule is stronger than this historical receipt: **the current reviewed head must independently reproduce the complete green gate.**
 
 ### Performance claim boundary
 
 The benchmark measures **local registration latency only**. Handler execution, network transport, provider latency, tool latency, and end-to-end agent latency are excluded.
 
-Promotion requires the measured **p95 registration latency to remain below 1 millisecond on the disclosed CI runner**. That is a reproducible benchmark condition, not a universal hardware guarantee.
+The CI gate requires measured **p95 registration latency below 1 millisecond on the disclosed runner**. The recorded baseline above clears that threshold. This is a reproducible bounded benchmark, not a universal hardware guarantee.
 
 ## Enter Through the Contract
 
@@ -161,7 +183,7 @@ Promotion requires the measured **p95 registration latency to remain below 1 mil
 
 ### Evidence boundary
 
-This repository can prove its own scheduler and local execution behavior when the current-head CI receipts are green.
+This repository can prove its scheduler, local execution behavior, disclosed-runner registration benchmark, repository health, and tracked-file integrity when the current-head CI receipts are green.
 
 It does **not** by itself prove:
 
@@ -194,8 +216,8 @@ Evidence / federation layer
 
 That separation is intentional: Tasklet owns **small execution**, not global policy, memory, company identity, or unrestricted tool authority.
 
-## Current Promotion State
+## Promotion Authority
 
-**Hardening candidate — promotion requires the exact current PR head to pass the complete three-version verification matrix and benchmark gate.**
+Tasklet does not self-promote from README text. The authoritative promotion state is the **current exact-head GitHub Actions result plus its JUnit, health, benchmark, and integrity artifacts**.
 
-No performance, CI, or TEST-level success from this branch should be treated as verified until those provider receipts exist.
+A green current-head run earns TEST evidence for the bounded local runtime and the disclosed-runner latency claim. A failing, stale, or absent current-head run leaves those claims unpromoted even when an older receipt was green.
