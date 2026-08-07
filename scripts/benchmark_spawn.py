@@ -6,6 +6,7 @@ from __future__ import annotations
 import argparse
 import hashlib
 import json
+import os
 import platform
 import statistics
 import sys
@@ -17,15 +18,25 @@ from tasklet_micro_agent_engine import TaskletMicroAgentEngine
 
 def percentile(values: list[float], fraction: float) -> float:
     ordered = sorted(values)
-    index = min(len(ordered) - 1, max(0, int((len(ordered) - 1) * fraction)))
+    index = min(
+        len(ordered) - 1,
+        max(0, int((len(ordered) - 1) * fraction)),
+    )
     return ordered[index]
 
 
-def benchmark(iterations: int, warmup: int) -> dict[str, object]:
+def benchmark(
+    iterations: int,
+    warmup: int,
+    *,
+    commit: str,
+) -> dict[str, object]:
     if iterations < 100:
         raise ValueError("iterations must be >= 100")
     if warmup < 0:
         raise ValueError("warmup must be >= 0")
+    if not commit:
+        raise ValueError("commit identity is required")
 
     engine = TaskletMicroAgentEngine(max_concurrent_tasklets=1)
     for index in range(warmup):
@@ -46,8 +57,10 @@ def benchmark(iterations: int, warmup: int) -> dict[str, object]:
         engine.complete_tasklet(tasklet_id)
         latencies_ms.append(elapsed_ms)
 
+    p95_ms = percentile(latencies_ms, 0.95)
     receipt: dict[str, object] = {
         "schema": "glaciereq.tasklet.spawn-benchmark.v1",
+        "commit": commit,
         "iterations": iterations,
         "warmup": warmup,
         "python": platform.python_version(),
@@ -55,14 +68,15 @@ def benchmark(iterations: int, warmup: int) -> dict[str, object]:
         "machine": platform.machine(),
         "metric": "local tasklet registration latency; handler execution excluded",
         "p50_ms": round(statistics.median(latencies_ms), 6),
-        "p95_ms": round(percentile(latencies_ms, 0.95), 6),
+        "p95_ms": round(p95_ms, 6),
         "p99_ms": round(percentile(latencies_ms, 0.99), 6),
         "max_ms": round(max(latencies_ms), 6),
         "mean_ms": round(statistics.fmean(latencies_ms), 6),
-        "sub_millisecond_p95": percentile(latencies_ms, 0.95) < 1.0,
+        "sub_millisecond_p95": p95_ms < 1.0,
         "truth_boundary": (
-            "This benchmark measures local registration only on the disclosed runner. "
-            "It is not a network, provider, end-to-end agent, or universal latency claim."
+            "This benchmark measures local registration only on the disclosed "
+            "runner. It is not a network, provider, end-to-end agent, or "
+            "universal latency claim."
         ),
     }
     payload = json.dumps(
@@ -80,10 +94,18 @@ def main() -> int:
     parser.add_argument("--warmup", type=int, default=500)
     parser.add_argument("--require-sub-ms-p95", action="store_true")
     parser.add_argument("--output", type=Path)
+    parser.add_argument(
+        "--commit",
+        default=os.environ.get("VERIFIED_SHA") or os.environ.get("GITHUB_SHA") or "LOCAL",
+    )
     args = parser.parse_args()
 
     try:
-        receipt = benchmark(args.iterations, args.warmup)
+        receipt = benchmark(
+            args.iterations,
+            args.warmup,
+            commit=args.commit,
+        )
     except (RuntimeError, ValueError) as exc:
         print(f"benchmark failed: {exc}", file=sys.stderr)
         return 1
