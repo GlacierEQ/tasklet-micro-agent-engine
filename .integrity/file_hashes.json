@@ -1,15 +1,26 @@
 {
-  "file_count": 10,
+  "algorithm": "sha256",
+  "file_count": 18,
   "hashes": {
+    ".github/workflows/ci.yml": "147079aa9c8855d2b1de35ca79eeba223bd69e09e4dbc7a37c3195333b0db330",
+    ".integrity/shadow_state.json": "d814323e87a254bba022ade48f10ed6851ab64e6539bcee081215c6d42f31f57",
+    ".integrity/watchdog_daemon.py": "2b6563c81040bf8c163fe8f8f581690ca260f86addc89d5d62f9f503fc1583fb",
     "AGENTS.md": "eb247a60bb48b54f5f54322479b47bddb2e802347fddec6bd0124a3b5ff88c57",
     "AKOS.md": "2761435d2647f96185f8d934dc74adcfcb6046347754d71d297207a99577e258",
     "HELIX.md": "a2430c761e44b2a8b20220c8a79f5dc49198f6664f62dc90f42eac4f90f103e6",
     "HELIX_STRAND.md": "9304a00e2c6835788f269ac5394bd8b2b7bba6575116e86a753753856e32faa7",
     "ISSUE_CONTRACT.md": "e72a93c408fdaac2e68d3e7f065ae0d249736d4f210c4dddf4e6ff4daf92dc55",
-    "README.md": "5baa74f4d8e29cdfb3ca3c2303c2a0c2b4f0fa2ce6769140543b4159a4402e6c",
+    "README.md": "6aa847b65cb96344d99c3b3f570b5b4c49abb4c7f7d7d997850dae6444ba9d17",
     "SECURITY_AND_FLEET_OPS.md": "26141c0f07d95847d679de423ddb7bdee6f3e319d204383c89a58d6d3bb610c7",
-    "mastermind_sidecar.py": "3a292e1b309bba2571c481ba06da9cd2f1aef13d56621e8eb8a10956ebf42579",
-    "src/tasklet_micro_agent_engine.py": "af0d85f97e5667ac83975673fb4126140dfaa661bbf6f27836384ba8af8de3f1",
-    "tests/test_tasklet.py": "27bae179cca40d65309ae82aa5e50421b490cc40ba98f86590df381dba3d0eff"
-  }
+    "mastermind_sidecar.py": "c097958a43f55c7f70d0c8592aa838ed2a1cb701c14a0da375b5a94805d4a986",
+    "pyproject.toml": "dc0109e37d85e3150527ad289c7a44bbabd68bfcec30189e771b42d44002e809",
+    "scripts/benchmark_spawn.py": "f1dfeb458f275423479f445ee9794dafeadb4ab9717dadc8e3edd0e8286e4b0e",
+    "scripts/verify_integrity.py": "c6e309a93238fc0dbc5fc8f734848f7def80962fdb2e453eea730291223b0b9a",
+    "scripts/verify_junit.py": "db3eec3df68c3a2f27898d6770133a6acbaeb3e26e6c03b5f09d9fa7fc43dd77",
+    "src/tasklet_micro_agent_engine.py": "f6348e399ca0a8b515c94c901e43ab2b2755e376a1287a9be926fad0e999129d",
+    "tests/test_sidecar.py": "b51f456ee4ddc956ddd0ce2c4061d6e75072f07ed71a2f40c7409d1d59fa33da",
+    "tests/test_tasklet.py": "bbda293f72e4f0c69395ebacfa3a65b44e651d4d5ba14bcfb37c3e90a22e0b6d"
+  },
+  "schema": "glaciereq.tasklet.integrity-manifest.v2",
+  "scope": "all_git_tracked_regular_files_except_manifest_itself"
 }
