@@ -42,12 +42,12 @@ def main() -> int:
         errors = sum(integer_attribute(suite, "errors") for suite in suites)
         skipped = sum(integer_attribute(suite, "skipped") for suite in suites)
         executed = tests - skipped
-        if executed <= 0:
-            raise ValueError("positive non-skipped executed-test count is required")
         if failures or errors:
             raise ValueError(
                 f"test evidence is not green: failures={failures} errors={errors}"
             )
+        if executed <= 0:
+            raise ValueError("positive non-skipped executed-test count is required")
         receipt = {
             "schema": "glaciereq.tasklet.test-receipt.v1",
             "commit": args.commit,
