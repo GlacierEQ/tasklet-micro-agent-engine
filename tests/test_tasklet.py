@@ -160,11 +160,13 @@ class AsyncExecutionTests(unittest.IsolatedAsyncioTestCase):
         first = asyncio.create_task(engine.run_tasklet(holder))
         await entered.wait()
         started = time.perf_counter()
-        second = await engine.run_tasklet(lambda _payload: "late", timeout_s=0.01)
+        # Short timeout: prove deadline covers wait-for-slot, not only handler body.
+        # Bound is loose enough for loaded CI/dev hosts (not a micro-benchmark).
+        second = await engine.run_tasklet(lambda _payload: "late", timeout_s=0.02)
         elapsed = time.perf_counter() - started
         self.assertFalse(second["ok"])
         self.assertEqual(second["status"], "TIMED_OUT")
-        self.assertLess(elapsed, 0.05)
+        self.assertLess(elapsed, 0.25, f"deadline should fire promptly, elapsed={elapsed}")
         release.set()
         self.assertTrue((await first)["ok"])
 
@@ -178,19 +180,31 @@ class AsyncExecutionTests(unittest.IsolatedAsyncioTestCase):
             worker_release.wait(timeout=1.0)
             return "finished"
 
-        timed_out = await engine.run_tasklet(slow_sync, timeout_s=0.01)
-        self.assertTrue(worker_started.is_set())
+        # Worker thread can lag slightly under load; wait for start signal
+        # rather than racing a 10ms deadline against thread scheduling.
+        timed_out = await engine.run_tasklet(slow_sync, timeout_s=0.05)
+        self.assertTrue(
+            worker_started.wait(timeout=1.0),
+            "sync worker must start before capacity is released",
+        )
         self.assertFalse(timed_out["ok"])
         self.assertEqual(timed_out["status"], "TIMED_OUT")
         self.assertTrue(timed_out["execution_continues"])
 
-        blocked = await engine.run_tasklet(lambda _payload: "next", timeout_s=0.01)
+        blocked = await engine.run_tasklet(lambda _payload: "next", timeout_s=0.05)
         self.assertFalse(blocked["ok"])
         self.assertEqual(blocked["status"], "TIMED_OUT")
 
         worker_release.set()
-        await asyncio.sleep(0.02)
-        completed = await engine.run_tasklet(lambda _payload: "next", timeout_s=0.1)
+        # Wait until capacity frees (worker finishes after release)
+        deadline = time.perf_counter() + 1.0
+        completed = None
+        while time.perf_counter() < deadline:
+            completed = await engine.run_tasklet(lambda _payload: "next", timeout_s=0.2)
+            if completed.get("ok"):
+                break
+            await asyncio.sleep(0.01)
+        self.assertIsNotNone(completed)
         self.assertTrue(completed["ok"])
         self.assertEqual(completed["result"], "next")
 

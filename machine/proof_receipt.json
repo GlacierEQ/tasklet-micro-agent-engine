@@ -1,0 +1,31 @@
+{
+  "schema": "glaciereq.proof-receipt.v1",
+  "repository": "GlacierEQ/tasklet-micro-agent-engine",
+  "source_sha": "ba39b31632649bc8d7f8da541c050708f30bed0321163adcffb8117b09c144cb",
+  "proof_id": "elite-tasklet-micro-agent-engine-1786335149",
+  "environment": {
+    "python": "/Users/kcbflux/job-app/excellence/.venv-elite/bin/python",
+    "PYTHONPATH": "/Users/kcbflux/job-app/repos/tasklet-micro-agent-engine:/Users/kcbflux/job-app/repos/tasklet-micro-agent-engine/src",
+    "entry": "unittest"
+  },
+  "tests": [
+    "/Users/kcbflux/job-app/excellence/.venv-elite/bin/python -m unittest discover -s tests -v (x2)"
+  ],
+  "adversarial_tests": [
+    "tests/test_adversarial.py"
+  ],
+  "runtime": {
+    "operate": "scripts/operate.py (x2)",
+    "dual_run_ok": true,
+    "proof_dual_run_ok": true
+  },
+  "result": "PASS",
+  "limitations": [
+    "not production deployed",
+    "reference implementation only"
+  ],
+  "timestamp": "2026-08-10T04:12Z",
+  "artifact_hashes": {
+    "operability_receipt": "59337fe4541655583639c5bd2b87822d021b2693056286b2a7942be94cff2e02"
+  }
+}

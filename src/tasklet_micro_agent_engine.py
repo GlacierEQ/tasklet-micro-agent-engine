@@ -322,10 +322,53 @@ class TaskletMicroAgentEngine:
         awaitable: Awaitable[Any],
         deadline: float | None,
     ) -> Any:
-        remaining = self._remaining(deadline)
-        if remaining is None:
-            return await awaitable
-        return await asyncio.wait_for(awaitable, timeout=remaining)
+        """Await ``awaitable`` under an absolute loop deadline.
+
+        Always schedules the awaitable as a Task so a zero/expired remaining
+        budget still cancels and drains it. Bare coroutines left un-awaited on
+        the early ``TimeoutError`` path from ``_remaining`` previously triggered
+        ``RuntimeWarning: coroutine was never awaited``.
+        """
+        task: asyncio.Task[Any]
+        if isinstance(awaitable, asyncio.Task):
+            task = awaitable
+        else:
+            task = asyncio.ensure_future(awaitable)
+
+        async def _cancel_drain() -> None:
+            if task.done():
+                # Consume exception/result so GC does not warn.
+                try:
+                    task.exception()
+                except (asyncio.CancelledError, Exception):
+                    pass
+                return
+            task.cancel()
+            try:
+                await task
+            except (asyncio.CancelledError, Exception):
+                pass
+
+        if deadline is None:
+            try:
+                return await task
+            except BaseException:
+                await _cancel_drain()
+                raise
+
+        remaining = deadline - asyncio.get_running_loop().time()
+        if remaining <= 0:
+            await _cancel_drain()
+            raise TimeoutError
+
+        try:
+            return await asyncio.wait_for(task, timeout=remaining)
+        except (TimeoutError, asyncio.TimeoutError):
+            await _cancel_drain()
+            raise TimeoutError
+        except BaseException:
+            await _cancel_drain()
+            raise
 
     async def _acquire_deadline(self, deadline: float | None) -> None:
         remaining = self._remaining(deadline)

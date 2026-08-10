@@ -1,0 +1,29 @@
+{
+  "schema": "glaciereq.operability-receipt.v1",
+  "repository": "GlacierEQ/tasklet-micro-agent-engine",
+  "at": "2026-08-10T04:12Z",
+  "source_sha": "ba39b31632649bc8d7f8da541c050708f30bed0321163adcffb8117b09c144cb",
+  "entry": "scripts/operate.py",
+  "primary_output": {
+    "module": "tasklet_micro_agent_engine",
+    "ok": true,
+    "repository": "GlacierEQ/tasklet-micro-agent-engine",
+    "smoke": {
+      "args": [
+        "'sample_tasklet_id'"
+      ],
+      "content_checked": true,
+      "invoked": true,
+      "kind": "class",
+      "method": "complete_tasklet",
+      "module_local": true,
+      "name": "TaskletMicroAgentEngine",
+      "result": {
+        "error": "unknown_tasklet",
+        "ok": false
+      }
+    }
+  },
+  "dual_run_ok": true,
+  "result": "PASS"
+}
