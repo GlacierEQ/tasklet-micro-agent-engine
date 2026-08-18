@@ -1,18 +1,20 @@
 # Tasklet Micro Agent Engine
 
-> **Small work should not require a heavyweight agent runtime. Tasklet makes atomic execution bounded, idempotent, deadline-aware, inspectable, and cheap to schedule.**
+> **Atomic work should not require a heavyweight multi-turn agent lifecycle. Tasklet makes precise execution bounded, idempotent, deadline-aware, inspectable, fast, and composable.**
 
-*Recruiter signal: a focused agent-infrastructure runtime, not another orchestration diagram.*
+*Recruiter signal: a focused high-quality execution primitive with production-shaped controls—not another orchestration diagram and not a philosophy of making systems small.*
 
-## The Smallest Useful Execution Boundary
+## High-Performance Atomic Execution Boundary
 
-Tasklet is a dependency-free Python runtime for **atomic local work**. It is designed for jobs that are too small to justify a full multi-turn agent lifecycle but still need the controls that toy executors usually omit.
+Tasklet is a dependency-light Python runtime for **atomic local work**. Its specialization is intentionally narrow at the execution boundary so larger agent, workflow, swarm, connector, and repository systems can compose many trustworthy operations without inheriting unnecessary coordination state for every known task.
+
+**Atomicity is the capability. Smallness is not the objective.**
 
 The runtime implements:
 
 - deterministic priority registration;
 - bounded concurrent handler execution;
-- synchronous **and** asynchronous handlers;
+- synchronous and asynchronous handlers;
 - per-task deadlines with terminal timeout receipts;
 - payload-size admission limits;
 - idempotency keys with completed-result replay;
@@ -36,13 +38,11 @@ receipt = await run_tasklet(
 )
 ```
 
-`run_tasklet()` is protocol-neutral. It is suitable for wrapping behind MCP or another tool protocol, but this repository does **not** claim an MCP server or external provider registration unless a separate adapter and provider receipt prove it.
+`run_tasklet()` is protocol-neutral. It is suitable for wrapping behind MCP, workflow, swarm, or another tool protocol, but this repository does not claim an external provider registration unless an adapter and provider receipt prove it.
 
 ### Why this matters
 
-Large agent frameworks are valuable when work needs planning, memory, dialogue, delegation, or broad tool choice. They add unnecessary state and coordination cost when the job is already known and bounded.
-
-Tasklet isolates that smaller execution class:
+Large agent frameworks are valuable when work needs planning, memory, dialogue, delegation, model/tool selection, or cross-system reasoning. When the task has already been selected and its interface is known, a dedicated execution primitive can provide stronger determinism, lower coordination overhead, clearer failure semantics, and easier composition.
 
 ```text
 validated payload
@@ -56,15 +56,27 @@ sync or async handler
 deadline + failure boundary
       ↓
 terminal execution receipt
+      ↓
+composition into the larger system
 ```
 
-The architectural claim is therefore narrow and testable: **atomic work can retain production-shaped execution controls without inheriting a heavyweight agent lifecycle.**
+The architectural claim is concrete: **known atomic work can retain production-shaped execution controls while remaining cheap enough to fan out and compose into much larger systems.**
 
-## Inside the Bounded Runtime
+## Engineering Boundary
 
-*Engineering review: implementation, failure behavior, and evidence.*
+Tasklet's bounds exist for correctness and operational control:
 
-### Core surfaces
+- concurrency bounds prevent local resource collapse;
+- payload limits protect memory and interface assumptions;
+- deadlines contain stalled work;
+- idempotency contains duplicate execution;
+- terminal states make recovery explicit.
+
+Those bounds must never be generalized into a system-wide rule to choose the smallest task, least capable architecture, smallest useful artifact, or minimum viable product.
+
+The parent system should optimize for **maximum coherent capability**. Tasklet contributes a trustworthy atomic execution floor to that larger ambition.
+
+## Core Surfaces
 
 | Surface | Purpose |
 |---|---|
@@ -86,7 +98,7 @@ The architectural claim is therefore narrow and testable: **atomic work can reta
 - Sync handlers run through `asyncio.to_thread()` so they do not block the event loop.
 - A semaphore bounds actual concurrent handler execution.
 - `asyncio.wait_for()` enforces configured deadlines.
-- User exceptions are converted to bounded `FAILED` receipts rather than escaping as fabricated success.
+- User exceptions become explicit `FAILED` receipts rather than fabricated success.
 - Cancellation records `CANCELLED` and propagates `CancelledError` to preserve cooperative cancellation semantics.
 
 ### Idempotency
@@ -97,7 +109,7 @@ When an `idempotency_key` is supplied:
 - a duplicate while the first execution remains in flight is rejected as `idempotency_in_flight`;
 - failed terminal work may be retried by a later execution rather than becoming permanently poisoned.
 
-This is deliberately process-local idempotency. Durable cross-process exactly-once semantics are **not** claimed without an external durable store and reconciliation protocol.
+This is deliberately process-local idempotency. Durable cross-process exactly-once semantics require an external durable store and reconciliation protocol and are not claimed here without implementation/proof.
 
 ### Admission limits
 
@@ -110,7 +122,9 @@ The runtime fails closed for:
 - duplicate active tasklet IDs;
 - scheduler registrations above the configured active-task limit.
 
-### Native verification
+These are runtime safety properties, not capability-minimization policy.
+
+## Native Verification
 
 The exact-head CI contract is:
 
@@ -119,21 +133,17 @@ python -m pip install -e ".[dev]"
 python -m ruff check src tests scripts mastermind_sidecar.py
 python -m compileall -q src tests scripts mastermind_sidecar.py
 python -m pytest --junitxml=artifacts/junit.xml
-python scripts/verify_junit.py artifacts/junit.xml \
-  --output artifacts/test-receipt.json
+python scripts/verify_junit.py artifacts/junit.xml --output artifacts/test-receipt.json
 python mastermind_sidecar.py
-python scripts/benchmark_spawn.py \
-  --iterations 5000 \
-  --warmup 500 \
-  --require-sub-ms-p95
+python scripts/benchmark_spawn.py --iterations 5000 --warmup 500 --require-sub-ms-p95
 python scripts/verify_integrity.py --check
 ```
 
-GitHub Actions checks out the **literal pull-request head SHA**, proves checkout identity, and repeats the correctness suite across Python **3.11, 3.12, and 3.13**. The benchmark runs separately on a disclosed GitHub-hosted Ubuntu runner. The integrity gate hashes every tracked regular file except the manifest itself and rejects drift.
+GitHub Actions checks out the literal pull-request head SHA, proves checkout identity, and repeats the correctness suite across Python 3.11, 3.12, and 3.13. The benchmark runs separately on a disclosed GitHub-hosted Ubuntu runner. The integrity gate hashes every tracked regular file except the manifest itself and rejects drift.
 
 ### Measured proof
 
-An exact-head provider run on commit `b270b0d01fbf33e52e25affa78b61cb4d197e620` established the current pre-promotion evidence baseline:
+An exact-head provider run on commit `b270b0d01fbf33e52e25affa78b61cb4d197e620` established the recorded evidence baseline:
 
 | Evidence | Result |
 |---|---:|
@@ -149,17 +159,15 @@ An exact-head provider run on commit `b270b0d01fbf33e52e25affa78b61cb4d197e620` 
 | Registration p99 | 0.364911 ms |
 | Benchmark runner | Linux x86_64, Python 3.13.14, Azure-hosted GitHub runner |
 
-The final promotion rule is stronger than this historical receipt: **the current reviewed head must independently reproduce the complete green gate.**
+The current reviewed head must reproduce the relevant gate before those results are promoted as current-head evidence.
 
 ### Performance claim boundary
 
-The benchmark measures **local registration latency only**. Handler execution, network transport, provider latency, tool latency, and end-to-end agent latency are excluded.
+The benchmark measures local registration latency only. Handler execution, network transport, provider latency, tool latency, and end-to-end agent latency are excluded.
 
-The CI gate requires measured **p95 registration latency below 1 millisecond on the disclosed runner**. The recorded baseline above clears that threshold. This is a reproducible bounded benchmark, not a universal hardware guarantee.
+The CI gate requires measured p95 registration latency below 1 millisecond on the disclosed runner. This is a reproducible benchmark within that scope, not a universal hardware guarantee.
 
-## Enter Through the Contract
-
-*Machine/toolchain surface: stable names, bounded authority, and non-claims.*
+## Machine Contract
 
 ```json
 {
@@ -172,52 +180,51 @@ The CI gate requires measured **p95 registration latency below 1 millisecond on 
   "durable_exactly_once": false,
   "external_provider_registration": false,
   "mcp_server_included": false,
-  "terminal_states": [
-    "COMPLETED",
-    "FAILED",
-    "TIMED_OUT",
-    "CANCELLED"
-  ]
+  "terminal_states": ["COMPLETED", "FAILED", "TIMED_OUT", "CANCELLED"]
 }
 ```
 
 ### Evidence boundary
 
-This repository can prove its scheduler, local execution behavior, disclosed-runner registration benchmark, repository health, and tracked-file integrity when the current-head CI receipts are green.
+This repository can prove only the behavior exercised by its current source and current/relevant receipts. It does not by itself prove distributed exactly-once execution, provider/MCP connectivity, multi-host coordination, persistence across process loss, universal latency, production traffic, or authority beyond the callable/payload explicitly supplied.
 
-It does **not** by itself prove:
+Proof boundaries calibrate claims. They do **not** justify shrinking Tasklet's future integration or the parent system's target.
 
-- distributed exactly-once execution;
-- provider or MCP connectivity;
-- multi-host coordination;
-- persistence across process loss;
-- universal sub-millisecond latency;
-- production deployment or customer traffic;
-- autonomous authority beyond the callable and payload explicitly supplied by the caller.
+## Relationship to GlacierEQ Systems
 
-Those are separate engineering layers and require separate receipts.
-
-## Relationship to the GlacierEQ System
-
-Tasklet is strongest as a **narrow execution primitive**, not as another global orchestrator.
+Tasklet is strongest as an **atomic execution primitive** inside a federated capability mesh—not as a global orchestrator and not as a subordinate that must surrender identity to one control plane.
 
 ```text
-AKOS / governed control plane
-        ↓ bounded task
+planner / operator-intent system
+        ↓ selected atomic task
 Tasklet runtime
-        ↓ terminal receipt
-Evidence / federation layer
+        ↓ verified terminal receipt
+workflow / evidence / federation / swarm layer
+        ↓ composition into larger capability
 ```
 
-- **AKOS** can decide whether a bounded action is authorized.
-- **Tasklet** can execute the already-selected atomic work.
-- **Sigma / federation layers** can own integration state across systems.
-- **Tower of Babel** can determine when a different language boundary is justified.
+Potential relationships include:
 
-That separation is intentional: Tasklet owns **small execution**, not global policy, memory, company identity, or unrestricted tool authority.
+- AKOS or another planner may select/route work;
+- Tasklet executes the already-defined atomic responsibility;
+- Sigma/federation systems may coordinate cross-system state;
+- Tower of Babel may inform language placement when a different implementation boundary earns its use;
+- other repositories may call Tasklet as a peer capability through an explicit interface.
 
-## Promotion Authority
+No relationship label makes another repository the owner of Tasklet's purpose or survival.
 
-Tasklet does not self-promote from README text. The authoritative promotion state is the **current exact-head GitHub Actions result plus its JUnit, health, benchmark, and integrity artifacts**.
+## Pro Code Elite Humanized Standard
 
-A green current-head run earns TEST evidence for the bounded local runtime and the disclosed-runner latency claim. A failing, stale, or absent current-head run leaves those claims unpromoted even when an older receipt was green.
+Tasklet development should optimize for:
+
+- explicit contracts;
+- deterministic and inspectable semantics;
+- strong concurrency/failure behavior;
+- high-quality type/name/interface decisions;
+- useful diagnostics;
+- measurable performance where claimed;
+- composability into large systems;
+- maintainability under real operational pressure;
+- no placeholder or governance theater.
+
+**Tasklet is small at the atomic boundary so the larger system can be bigger, stronger, faster, and more trustworthy.**
