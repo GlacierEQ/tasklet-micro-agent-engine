@@ -108,7 +108,7 @@ class TaskletMicroAgentEngine:
         return sum(
             1
             for tasklet in self.tasklet_registry.values()
-            if tasklet["status"] == "RUNNING"
+            if tasklet["status"] == "RUNNING" or tasklet.get("execution_continues")
         )
 
     def _queued_count(self) -> int:
@@ -161,7 +161,7 @@ class TaskletMicroAgentEngine:
         tasklet_id = tasklet_id or str(uuid.uuid4())
 
         existing = self.tasklet_registry.get(tasklet_id)
-        if existing and existing["status"] not in TERMINAL_STATES:
+        if existing and (existing["status"] not in TERMINAL_STATES or existing.get("execution_continues")):
             self.metrics["rejected"] += 1
             return {
                 "ok": False,
@@ -420,7 +420,7 @@ class TaskletMicroAgentEngine:
                             "replayed": True,
                             "idempotency_key": idempotency_key,
                         }
-                    elif previous["status"] not in TERMINAL_STATES:
+                    elif previous["status"] not in TERMINAL_STATES or previous.get("execution_continues"):
                         self.metrics["rejected"] += 1
                         return {
                             "ok": False,
@@ -432,7 +432,7 @@ class TaskletMicroAgentEngine:
 
             resolved_id = tasklet_id or str(uuid.uuid4())
             existing = self.tasklet_registry.get(resolved_id)
-            if existing and existing["status"] not in TERMINAL_STATES:
+            if existing and (existing["status"] not in TERMINAL_STATES or existing.get("execution_continues")):
                 self.metrics["rejected"] += 1
                 return {
                     "ok": False,
@@ -459,6 +459,21 @@ class TaskletMicroAgentEngine:
         deferred_release = False
         sync_worker: asyncio.Task[Any] | None = None
 
+        def reconcile_worker(worker: asyncio.Task[Any]) -> None:
+            try:
+                produced = worker.result()
+                if inspect.iscoroutine(produced):
+                    produced.close()
+                elif isinstance(produced, asyncio.Future):
+                    produced.cancel()
+            except (asyncio.CancelledError, Exception):
+                pass
+            finally:
+                record = self.tasklet_registry[resolved_id]
+                record["execution_continues"] = False
+                record["updated_at"] = time.time()
+                self._semaphore.release()
+
         try:
             await self._acquire_deadline(deadline)
             acquired = True
@@ -478,7 +493,7 @@ class TaskletMicroAgentEngine:
                 )
                 remaining = self._remaining(deadline)
                 if remaining is None:
-                    produced = await sync_worker
+                    produced = await asyncio.shield(sync_worker)
                 else:
                     produced = await asyncio.wait_for(
                         asyncio.shield(sync_worker),
@@ -495,7 +510,7 @@ class TaskletMicroAgentEngine:
             if execution_continues:
                 deferred_release = True
                 sync_worker.add_done_callback(
-                    lambda _future: self._semaphore.release()
+                    reconcile_worker
                 )
             transition = self._finish(
                 resolved_id,
@@ -520,7 +535,7 @@ class TaskletMicroAgentEngine:
             if execution_continues:
                 deferred_release = True
                 sync_worker.add_done_callback(
-                    lambda _future: self._semaphore.release()
+                    reconcile_worker
                 )
             transition = self._finish(
                 resolved_id,
