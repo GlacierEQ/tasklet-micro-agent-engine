@@ -52,7 +52,7 @@ class TaskletMicroAgentEngine:
         self.tasklet_registry: dict[str, dict[str, Any]] = {}
         self._heap: list[tuple[int, int, str]] = []
         self._seq = 0
-        self._semaphore = asyncio.Semaphore(max_concurrent_tasklets)
+        self._capacity_changed = asyncio.Event()
         self._state_lock = asyncio.Lock()
         self._idempotency_index: dict[str, str] = {}
         self.metrics = {
@@ -228,6 +228,8 @@ class TaskletMicroAgentEngine:
         record["status"] = status
         record["updated_at"] = time.time()
         record["execution_continues"] = execution_continues
+        if not execution_continues:
+            self._capacity_changed.set()
         if result is not None:
             record["result"] = result
         if error is not None:
@@ -263,6 +265,7 @@ class TaskletMicroAgentEngine:
                 "error": f"cannot_suspend_from_{record['status']}",
             }
         record["status"] = "SUSPENDED"
+        self._capacity_changed.set()
         record["snapshot"] = dict(record.get("payload") or {})
         record["updated_at"] = time.time()
         return {"ok": True, "tasklet_id": tasklet_id, "status": "SUSPENDED"}
@@ -370,12 +373,21 @@ class TaskletMicroAgentEngine:
             await _cancel_drain()
             raise
 
-    async def _acquire_deadline(self, deadline: float | None) -> None:
-        remaining = self._remaining(deadline)
-        if remaining is None:
-            await self._semaphore.acquire()
-        else:
-            await asyncio.wait_for(self._semaphore.acquire(), timeout=remaining)
+    async def _acquire_deadline(self, tasklet_id: str, deadline: float | None) -> None:
+        # All admission paths share registry occupancy. No await separates
+        # the capacity check from reservation on the owning event loop.
+        while True:
+            remaining = self._remaining(deadline)
+            if self._running_count() < self.max_concurrent_tasklets:
+                record = self.tasklet_registry[tasklet_id]
+                record["status"] = "RUNNING"
+                record["updated_at"] = time.time()
+                return
+            self._capacity_changed.clear()
+            if remaining is None:
+                await self._capacity_changed.wait()
+            else:
+                await asyncio.wait_for(self._capacity_changed.wait(), timeout=remaining)
 
     async def run_tasklet(
         self,
@@ -389,7 +401,7 @@ class TaskletMicroAgentEngine:
     ) -> dict[str, Any]:
         """Execute one bounded tasklet and return a structured receipt.
 
-        The deadline covers semaphore wait plus handler execution. Async handlers
+        The deadline covers shared capacity wait plus handler execution. Async handlers
         are cooperatively cancellable. A timed-out synchronous handler may still
         finish in its worker thread; Tasklet retains its concurrency slot until
         that worker exits and marks ``execution_continues`` in the timeout
@@ -455,8 +467,6 @@ class TaskletMicroAgentEngine:
         started = time.perf_counter()
         loop = asyncio.get_running_loop()
         deadline = None if timeout is None else loop.time() + timeout
-        acquired = False
-        deferred_release = False
         sync_worker: asyncio.Task[Any] | None = None
 
         def reconcile_worker(worker: asyncio.Task[Any]) -> None:
@@ -472,14 +482,10 @@ class TaskletMicroAgentEngine:
                 record = self.tasklet_registry[resolved_id]
                 record["execution_continues"] = False
                 record["updated_at"] = time.time()
-                self._semaphore.release()
+                self._capacity_changed.set()
 
         try:
-            await self._acquire_deadline(deadline)
-            acquired = True
-            record = self.tasklet_registry[resolved_id]
-            record["status"] = "RUNNING"
-            record["updated_at"] = time.time()
+            await self._acquire_deadline(resolved_id, deadline)
 
             if self._is_async_callable(handler):
                 produced = handler(dict(normalized))
@@ -508,7 +514,6 @@ class TaskletMicroAgentEngine:
                 sync_worker is not None and not sync_worker.done()
             )
             if execution_continues:
-                deferred_release = True
                 sync_worker.add_done_callback(
                     reconcile_worker
                 )
@@ -533,7 +538,6 @@ class TaskletMicroAgentEngine:
                 sync_worker is not None and not sync_worker.done()
             )
             if execution_continues:
-                deferred_release = True
                 sync_worker.add_done_callback(
                     reconcile_worker
                 )
@@ -561,10 +565,6 @@ class TaskletMicroAgentEngine:
                 "error": f"{type(exc).__name__}: {exc}",
                 "elapsed_ms": round((time.perf_counter() - started) * 1000, 6),
             }
-        finally:
-            if acquired and not deferred_release:
-                self._semaphore.release()
-
         transition = self._finish(resolved_id, "COMPLETED", result=result)
         if not transition["ok"]:
             self.metrics["failed"] += 1
