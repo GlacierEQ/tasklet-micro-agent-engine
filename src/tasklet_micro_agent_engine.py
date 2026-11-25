@@ -161,7 +161,11 @@ class TaskletMicroAgentEngine:
         tasklet_id = tasklet_id or str(uuid.uuid4())
 
         existing = self.tasklet_registry.get(tasklet_id)
-        if existing and (existing["status"] not in TERMINAL_STATES or existing.get("execution_continues")):
+        if existing and (
+            existing["status"] not in TERMINAL_STATES
+            or existing.get("execution_continues")
+            or existing.get("late_outcome")
+        ):
             self.metrics["rejected"] += 1
             return {
                 "ok": False,
@@ -422,6 +426,18 @@ class TaskletMicroAgentEngine:
                     previous = self.tasklet_registry.get(previous_id)
                     if previous is None:
                         self._idempotency_index.pop(idempotency_key, None)
+                    elif previous.get("late_outcome", {}).get("status") == "COMPLETED":
+                        self.metrics["idempotent_replays"] += 1
+                        return {
+                            "ok": True,
+                            "tasklet_id": previous_id,
+                            "status": "COMPLETED",
+                            "result": previous["late_outcome"]["result"],
+                            "replayed": True,
+                            "reconciled": True,
+                            "original_status": previous["status"],
+                            "idempotency_key": idempotency_key,
+                        }
                     elif previous["status"] == "COMPLETED":
                         self.metrics["idempotent_replays"] += 1
                         return {
@@ -432,7 +448,10 @@ class TaskletMicroAgentEngine:
                             "replayed": True,
                             "idempotency_key": idempotency_key,
                         }
-                    elif previous["status"] not in TERMINAL_STATES or previous.get("execution_continues"):
+                    elif (
+                        previous["status"] not in TERMINAL_STATES
+                        or previous.get("execution_continues")
+                    ):
                         self.metrics["rejected"] += 1
                         return {
                             "ok": False,
@@ -441,10 +460,23 @@ class TaskletMicroAgentEngine:
                             "error": "idempotency_in_flight",
                             "idempotency_key": idempotency_key,
                         }
+                    elif previous.get("late_outcome"):
+                        self.metrics["rejected"] += 1
+                        return {
+                            "ok": False,
+                            "tasklet_id": previous_id,
+                            "status": "REJECTED",
+                            "error": "reconciliation_required",
+                            "idempotency_key": idempotency_key,
+                        }
 
             resolved_id = tasklet_id or str(uuid.uuid4())
             existing = self.tasklet_registry.get(resolved_id)
-            if existing and (existing["status"] not in TERMINAL_STATES or existing.get("execution_continues")):
+            if existing and (
+                existing["status"] not in TERMINAL_STATES
+                or existing.get("execution_continues")
+                or existing.get("late_outcome")
+            ):
                 self.metrics["rejected"] += 1
                 return {
                     "ok": False,
@@ -468,21 +500,41 @@ class TaskletMicroAgentEngine:
         loop = asyncio.get_running_loop()
         deadline = None if timeout is None else loop.time() + timeout
         sync_worker: asyncio.Task[Any] | None = None
+        sync_result_observed = False
 
         def reconcile_worker(worker: asyncio.Task[Any]) -> None:
+            record = self.tasklet_registry[resolved_id]
+            if worker.cancelled():
+                # A cancelled asyncio wrapper does not prove its thread exited.
+                record["late_outcome"] = {"status": "UNCONFIRMED"}
+                record["updated_at"] = time.time()
+                return
             try:
                 produced = worker.result()
-                if inspect.iscoroutine(produced):
-                    produced.close()
-                elif isinstance(produced, asyncio.Future):
-                    produced.cancel()
-            except (asyncio.CancelledError, Exception):
-                pass
-            finally:
-                record = self.tasklet_registry[resolved_id]
-                record["execution_continues"] = False
-                record["updated_at"] = time.time()
-                self._capacity_changed.set()
+                if inspect.isawaitable(produced):
+                    if inspect.iscoroutine(produced):
+                        produced.close()
+                    elif isinstance(produced, asyncio.Future):
+                        produced.cancel()
+                    outcome = {"status": "UNCONFIRMED"}
+                else:
+                    outcome = {"status": "COMPLETED", "result": produced}
+            except Exception as exc:  # noqa: BLE001 - preserve ambiguous failure evidence
+                outcome = {"status": "UNCONFIRMED", "error": f"{type(exc).__name__}: {exc}"}
+            # Preserve the original caller timeout/cancellation receipt. Only
+            # a local completed handler result may be replayed; an exception
+            # does not establish that external side effects were rolled back.
+            record["late_outcome"] = outcome
+            record["execution_continues"] = False
+            record["updated_at"] = time.time()
+            self._capacity_changed.set()
+
+        def reconcile_unobserved_worker() -> None:
+            if sync_worker is not None and not sync_result_observed:
+                if sync_worker.done():
+                    reconcile_worker(sync_worker)
+                else:
+                    sync_worker.add_done_callback(reconcile_worker)
 
         try:
             await self._acquire_deadline(resolved_id, deadline)
@@ -494,10 +546,10 @@ class TaskletMicroAgentEngine:
                 else:
                     result = produced
             else:
+                remaining = self._remaining(deadline)
                 sync_worker = asyncio.create_task(
                     asyncio.to_thread(handler, dict(normalized))
                 )
-                remaining = self._remaining(deadline)
                 if remaining is None:
                     produced = await asyncio.shield(sync_worker)
                 else:
@@ -505,18 +557,13 @@ class TaskletMicroAgentEngine:
                         asyncio.shield(sync_worker),
                         timeout=remaining,
                     )
+                sync_result_observed = True
                 if inspect.isawaitable(produced):
                     result = await self._await_deadline(produced, deadline)
                 else:
                     result = produced
         except TimeoutError:
-            execution_continues = bool(
-                sync_worker is not None and not sync_worker.done()
-            )
-            if execution_continues:
-                sync_worker.add_done_callback(
-                    reconcile_worker
-                )
+            execution_continues = sync_worker is not None and not sync_result_observed
             transition = self._finish(
                 resolved_id,
                 "TIMED_OUT",
@@ -525,6 +572,8 @@ class TaskletMicroAgentEngine:
             )
             if transition["ok"]:
                 self.metrics["timed_out"] += 1
+                reconcile_unobserved_worker()
+                execution_continues = transition["record"]["execution_continues"]
             return {
                 "ok": False,
                 "tasklet_id": resolved_id,
@@ -534,13 +583,7 @@ class TaskletMicroAgentEngine:
                 "elapsed_ms": round((time.perf_counter() - started) * 1000, 6),
             }
         except asyncio.CancelledError:
-            execution_continues = bool(
-                sync_worker is not None and not sync_worker.done()
-            )
-            if execution_continues:
-                sync_worker.add_done_callback(
-                    reconcile_worker
-                )
+            execution_continues = sync_worker is not None and not sync_result_observed
             transition = self._finish(
                 resolved_id,
                 "CANCELLED",
@@ -549,6 +592,7 @@ class TaskletMicroAgentEngine:
             )
             if transition["ok"]:
                 self.metrics["cancelled"] += 1
+                reconcile_unobserved_worker()
             raise
         except Exception as exc:  # noqa: BLE001 - boundary converts failures to receipts
             transition = self._finish(
